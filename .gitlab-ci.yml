@@ -15,7 +15,7 @@ build:
   - echo Restoring packages
   - dotnet restore .\src\RabbitLink
   - echo Building
-  - dotnet build .\src\RabbitLink  
+  - dotnet build .\src\RabbitLink -c release
 
 pack:
   tags: 
@@ -52,4 +52,4 @@ publish:
   - pack
   script:
   - echo "Publishing nuget package"  
-  - '"%NugetPath%" push artifacts\*.nupkg "%NUGET_API_KEY%" -NonInteractive'
+  - util\nuget.exe push artifacts\*.nupkg "%NUGET_API_KEY%" -NonInteractive
