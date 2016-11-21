@@ -22,6 +22,35 @@ namespace RabbitLink.Producer
 {
     internal class LinkProducer : ILinkProducerIntenal
     {
+        #region .fields
+
+        private readonly CancellationTokenSource _disposedCancellationSource;
+        private readonly CancellationToken _disposedCancellation;
+
+        private readonly LinkedList<LinkProducerQueueMessage> _ackQueue = new LinkedList<LinkProducerQueueMessage>();
+        private readonly AsyncLock _ackQueueLock = new AsyncLock();
+
+        private readonly LinkProducerQueue _messageQueue = new LinkProducerQueue();
+
+        private readonly Func<ILinkTopologyConfig, Task<ILinkExchage>> _topologyConfigHandler;
+        private readonly Func<Exception, Task> _topologyConfigErrorHandler;
+
+        private Task _loopTask;
+        private CancellationTokenSource _loopCancellationSource;
+        private CancellationToken _loopCancellation;
+
+        private readonly object _sync = new object();
+
+        private readonly LinkProducerConfiguration _configuration;
+        private readonly LinkConfiguration _linkConfiguration;
+
+        private readonly ILinkChannel _channel;
+        private readonly ILinkTopology _topology;
+        private readonly ILinkLogger _logger;
+        private ILinkExchage _exchage;
+
+        #endregion
+
         #region .ctor
 
         public LinkProducer(LinkProducerConfiguration configuration, LinkConfiguration linkConfiguration,
@@ -63,7 +92,8 @@ namespace RabbitLink.Producer
             _channel.Return += ChannelOnReturn;
 
             _topology = new LinkTopology(linkConfiguration, _channel,
-                new LinkActionsTopologyHandler(TopologyConfigureAsync, TopologyReadyAsync, TopologyConfigurationErrorAsync), false);
+                new LinkActionsTopologyHandler(TopologyConfigureAsync, TopologyReadyAsync,
+                    TopologyConfigurationErrorAsync), false);
             _topology.Disposed += TopologyOnDisposed;
 
             _logger.Debug($"Created(channelId: {_channel.Id})");
@@ -100,7 +130,7 @@ namespace RabbitLink.Producer
                 _loopCancellationSource?.Dispose();
 
                 // ReSharper disable once MethodSupportsCancellation
-                _loopTask?.WaitAndUnwrapException();                
+                _loopTask?.WaitAndUnwrapException();
 
                 // cancelling requests
                 var ex = new ObjectDisposedException(GetType().Name);
@@ -127,7 +157,8 @@ namespace RabbitLink.Producer
 
         #region Public methods        
 
-        public Task PublishAsync<T>(T body, LinkMessageProperties properties = null, LinkPublishProperties publishProperties = null,
+        public Task PublishAsync<T>(T body, LinkMessageProperties properties = null,
+            LinkPublishProperties publishProperties = null,
             CancellationToken? cancellation = null) where T : class
         {
             var msgProperties = _configuration.MessageProperties.Clone();
@@ -164,7 +195,8 @@ namespace RabbitLink.Producer
 
         #region Private methods
 
-        private async Task PublishRawAsync(byte[] body, LinkMessageProperties properties, LinkPublishProperties publishProperties = null,
+        private async Task PublishRawAsync(byte[] body, LinkMessageProperties properties,
+            LinkPublishProperties publishProperties = null,
             CancellationToken? cancellation = null)
         {
             if (_disposedCancellation.IsCancellationRequested)
@@ -211,35 +243,6 @@ namespace RabbitLink.Producer
                 .ConfigureAwait(false);
         }
 
-        #endregion        
-
-        #region Fields
-
-        private readonly CancellationTokenSource _disposedCancellationSource;
-        private readonly CancellationToken _disposedCancellation;
-
-        private readonly LinkedList<LinkProducerQueueMessage> _ackQueue = new LinkedList<LinkProducerQueueMessage>();
-        private readonly AsyncLock _ackQueueLock = new AsyncLock();
-
-        private readonly LinkProducerQueue _messageQueue = new LinkProducerQueue();
-
-        private readonly Func<ILinkTopologyConfig, Task<ILinkExchage>> _topologyConfigHandler;
-        private readonly Func<Exception, Task> _topologyConfigErrorHandler;
-
-        private Task _loopTask;
-        private CancellationTokenSource _loopCancellationSource;
-        private CancellationToken _loopCancellation;
-
-        private readonly object _sync = new object();
-
-        private readonly LinkProducerConfiguration _configuration;
-        private readonly LinkConfiguration _linkConfiguration;
-
-        private readonly ILinkChannel _channel;
-        private readonly ILinkTopology _topology;
-        private readonly ILinkLogger _logger;
-        private ILinkExchage _exchage;
-
         #endregion
 
         #region Properties
@@ -257,7 +260,7 @@ namespace RabbitLink.Producer
         #region Send
 
         private async Task RequeueUnackedAsync()
-        {            
+        {
             using (await _ackQueueLock.LockAsync().ConfigureAwait(false))
             {
                 if (!_ackQueue.Any())
@@ -272,24 +275,24 @@ namespace RabbitLink.Producer
         private async Task SendMessageAsync(LinkProducerQueueMessage msg, CancellationToken cancellation)
         {
             await _channel.InvokeActionAsync(model =>
-            {
-                using (_ackQueueLock.Lock())
                 {
-                    msg.Sequence = model.NextPublishSeqNo;
-
-                    var properties = model.CreateBasicProperties();
-                    msg.Properties.CopyTo(properties);
-
-                    model.BasicPublish(_exchage.Name, msg.PublishProperties.RoutingKey ?? "",
-                        msg.PublishProperties.Mandatory ?? false, properties,
-                        msg.Body);
-
-                    if (ConfirmsMode)
+                    using (_ackQueueLock.Lock())
                     {
-                        _ackQueue.AddFirst(msg);
+                        msg.Sequence = model.NextPublishSeqNo;
+
+                        var properties = model.CreateBasicProperties();
+                        msg.Properties.CopyTo(properties);
+
+                        model.BasicPublish(_exchage.Name, msg.PublishProperties.RoutingKey ?? "",
+                            msg.PublishProperties.Mandatory ?? false, properties,
+                            msg.Body);
+
+                        if (ConfirmsMode)
+                        {
+                            _ackQueue.AddFirst(msg);
+                        }
                     }
-                }
-            }, cancellation)
+                }, cancellation)
                 .ConfigureAwait(false);
         }
 
@@ -311,7 +314,9 @@ namespace RabbitLink.Producer
 
                 try
                 {
-                    using (var compositeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation, msg.Cancellation))
+                    using (
+                        var compositeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation,
+                            msg.Cancellation))
                     {
                         await SendMessageAsync(msg, compositeCancellation.Token)
                             .ConfigureAwait(false);
@@ -361,7 +366,7 @@ namespace RabbitLink.Producer
                     _logger.Info("Channel is open and publish loop ends, scheduling reconfiguration.");
                     _topology.ScheduleConfiguration(true);
                 }
-            }            
+            }
         }
 
         #endregion
@@ -433,7 +438,7 @@ namespace RabbitLink.Producer
                 _loopCancellationSource?.Cancel();
                 _loopCancellationSource?.Dispose();
                 // ReSharper disable once MethodSupportsCancellation                    
-                _loopTask?.WaitWithoutException();                
+                _loopTask?.WaitWithoutException();
 
                 _loopCancellationSource = new CancellationTokenSource();
                 _loopCancellation = _loopCancellationSource.Token;

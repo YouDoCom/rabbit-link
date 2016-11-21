@@ -87,7 +87,7 @@ namespace RabbitLink.Topology.Internal
 
                     await Task.Run(async () =>
                     {
-                        await ConfigureAsync()
+                        await ConfigureAsync()                                                
                             .ConfigureAwait(false);
                     }, _disposedCancellation)
                         .ConfigureAwait(false);

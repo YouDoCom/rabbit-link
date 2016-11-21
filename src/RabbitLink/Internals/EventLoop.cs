@@ -61,8 +61,7 @@ namespace RabbitLink.Internals
                 {
                     break;
                 }
-
-                // ReSharper disable once MethodSupportsCancellation
+                
                 await job.RunAsync()
                 .ConfigureAwait(false);
             }
@@ -199,12 +198,7 @@ namespace RabbitLink.Internals
             };
 
             return ScheduleAsync(fn, token);
-        }
-
-        public Task ScheduleAsync(Action action)
-        {
-            return ScheduleAsync(action, CancellationToken.None);
-        }
+        }        
 
         #endregion
     }
