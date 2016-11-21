@@ -6,8 +6,8 @@
     "Artur Kraev <ravenox@gmail.com>"
   ],
   "copyright": "Copyright © Artur Kraev 2015-2016",
-  "projectUrl": "https://github.com/rabbit-link/rabbit-link",
   "packOptions": {
+    "projectUrl": "https://github.com/rabbit-link/rabbit-link",    
     "licenseUrl": "https://raw.githubusercontent.com/rabbit-link/rabbit-link/master/LICENSE",
     "owners": [ "Artur Kraev <ravenox@gmail.com>" ],
     "tags": [ "RabbitMQ", "Messaging", "AMQP" ],
