@@ -6,7 +6,7 @@ using System;
 
 namespace RabbitLink
 {
-    public sealed class LinkConnectionProperties : ICloneable
+    public sealed class LinkConnectionProperties
     {
         public string ConnectionString { get; set; }
         public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(3);
@@ -14,7 +14,7 @@ namespace RabbitLink
 
         public bool AutoStart { get; set; } = true;
 
-        object ICloneable.Clone()
+        public LinkConnectionProperties Clone()
         {
             return new LinkConnectionProperties
             {
@@ -43,11 +43,6 @@ namespace RabbitLink
                 throw new ArgumentOutOfRangeException(nameof(RecoveryInterval),
                     "TotalMilliseconds must be greater than 0");
             }
-        }
-
-        public LinkConnectionProperties Clone()
-        {
-            return (LinkConnectionProperties) ((ICloneable) this).Clone();
-        }
+        }        
     }
 }

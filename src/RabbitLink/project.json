@@ -1,0 +1,33 @@
+﻿{
+  "version": "0.4.0-*",
+  "title": "RabbitLink",
+  "description": "Advanced .Net API for RabbitMQ",
+  "authors": [
+    "Artur Kraev <ravenox@gmail.com>"
+  ],
+  "copyright": "Copyright © Artur Kraev 2015-2016",
+  "projectUrl": "https://github.com/rabbit-link/rabbit-link",
+  "packOptions": {
+    "licenseUrl": "https://raw.githubusercontent.com/rabbit-link/rabbit-link/master/LICENSE",
+    "owners": [ "Artur Kraev <ravenox@gmail.com>" ],
+    "tags": [ "RabbitMQ", "Messaging", "AMQP" ],
+    "summary": "Advanced .Net API for RabbitMQ"
+  },
+
+  "dependencies": {
+    "NETStandard.Library": "1.6.1",
+    "Newtonsoft.Json": "9.0.1",
+    "Nito.AsyncEx.Coordination": "1.0.2",
+    "Nito.AsyncEx.Tasks": "1.1.0",
+    "RabbitMQ.Client": "4.1.1"    
+  },
+
+  "frameworks": {
+    "netstandard1.5": {
+      "System.Threading": "4.3.0",
+      "System.Threading.Tasks": "4.3.0"
+    },
+    "net46": {
+    } 
+  }
+}

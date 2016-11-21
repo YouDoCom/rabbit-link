@@ -7,7 +7,7 @@ using RabbitLink.Configuration;
 
 namespace RabbitLink.Messaging
 {
-    public class LinkRecieveMessageProperties : ICloneable
+    public class LinkRecieveMessageProperties
     {
         public LinkRecieveMessageProperties(bool redelivered, string exchangeName, string routingKey, string queueName, bool isFromThisApp)
         {
@@ -38,12 +38,7 @@ namespace RabbitLink.Messaging
         /// <summary>
         /// Message was published from this application ( <see cref="ILinkConfigurationBuilder.AppId"/> == <see cref="LinkMessageProperties.AppId" /> )
         /// </summary>
-        public bool IsFromThisApp { get; }
-
-        object ICloneable.Clone()
-        {
-            return Clone();
-        }
+        public bool IsFromThisApp { get; }        
 
         public LinkRecieveMessageProperties Clone()
         {

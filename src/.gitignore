@@ -32,12 +32,8 @@ TestsResult.html
 [Bb]uild[Ll]og.*
 *.[Pp]ublish.xml
 [Tt]humbs.db
+project.lock.json
 
-# Idea
-.idea
-
-# NuGet
-/packages/
 
 # Build
 /artifacts/
