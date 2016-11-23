@@ -23,7 +23,6 @@ namespace RabbitLink.Connection
         event EventHandler<BasicNackEventArgs> Nack;
         event EventHandler<BasicReturnEventArgs> Return;
         event EventHandler Disposed;
-        Task InvokeActionAsync(Action<IModel> action, CancellationToken cancellation);
-        Task InvokeActionAsync(Action<IModel> action);
+        Task InvokeActionAsync(Action<IModel> action, CancellationToken cancellation);        
     }
 }

@@ -40,7 +40,7 @@ namespace RabbitLink.Internals
             _cancellationSource.Dispose();
 
             // ReSharper disable once MethodSupportsCancellation
-            _loopTask.WaitAndUnwrapException();            
+            _loopTask.WaitAndUnwrapException();
         }
 
         #endregion
@@ -61,7 +61,7 @@ namespace RabbitLink.Internals
                 {
                     break;
                 }
-                
+
                 await job.RunAsync()
                 .ConfigureAwait(false);
             }
@@ -154,10 +154,7 @@ namespace RabbitLink.Internals
             if (action == null)
                 throw new ArgumentNullException(nameof(action));
 
-            var job =
-                new JobItem(
-                    async () => await Task.Run(async ()=> await action().ConfigureAwait(false), token).ConfigureAwait(false),
-                    token);
+            var job = new JobItem(async () => await action().ConfigureAwait(false), token);
 
             try
             {
@@ -180,24 +177,6 @@ namespace RabbitLink.Internals
                 await action().ConfigureAwait(false);
                 return (object)null;
             }, token);
-        }
-
-        public Task<T> ScheduleAsync<T>(Func<T> action, CancellationToken token)
-        {
-#pragma warning disable CS1998 // Async method lacks 'await' operators and will run synchronously
-            return ScheduleAsync(async () => action(), token);
-#pragma warning restore CS1998 // Async method lacks 'await' operators and will run synchronously
-        }
-
-        public Task ScheduleAsync(Action action, CancellationToken token)
-        {
-            Func<object> fn = () =>
-            {
-                action();
-                return null;
-            };
-
-            return ScheduleAsync(fn, token);
         }        
 
         #endregion

@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitLink.Configuration;
+using RabbitLink.Helpers;
 using RabbitLink.Internals;
 using RabbitLink.Logging;
 using RabbitMQ.Client;
@@ -23,7 +24,7 @@ namespace RabbitLink.Connection
             if (_disposedCancellation.IsCancellationRequested)
                 return;
 
-            lock (_syncObject)
+            lock (_disposedCancellationSource)
             {
                 if (_disposedCancellation.IsCancellationRequested)
                     return;
@@ -60,11 +61,10 @@ namespace RabbitLink.Connection
 
         private readonly CancellationTokenSource _disposedCancellationSource;
         private readonly CancellationToken _disposedCancellation;
-        private readonly EventLoop _eventLoop = new EventLoop();
+        private readonly EventLoop _eventLoop = new EventLoop(EventLoop.DisposingStrategy.Wait);
 
         private readonly LinkConfiguration _configuration;
         private readonly ILinkLogger _logger;
-        private readonly object _syncObject = new object();
         private IModel _model;
 
         #endregion
@@ -110,10 +110,7 @@ namespace RabbitLink.Connection
 
         public Guid Id { get; } = Guid.NewGuid();
 
-        public bool IsOpen =>
-            !_disposedCancellation.IsCancellationRequested &&
-            Connection.IsConnected &&
-            _model?.IsOpen == true;
+        public bool IsOpen => _model?.IsOpen == true;
 
         public ILinkConnection Connection { get; }
 
@@ -135,10 +132,7 @@ namespace RabbitLink.Connection
         #region Public methods
 
         public async Task InvokeActionAsync(Action<IModel> action, CancellationToken cancellation)
-        {
-            await Task.Delay(0)
-                .ConfigureAwait(false);
-
+        {            
             if (_disposedCancellation.IsCancellationRequested)
                 throw new ObjectDisposedException(GetType().Name);
 
@@ -151,7 +145,7 @@ namespace RabbitLink.Connection
                         if (_model?.IsOpen != true)
                             throw new InvalidOperationException("Channel closed");
 
-                        action(_model);
+                        return AsyncHelper.RunAsync(() => action(_model));                        
                     }, compositeCancellation.Token)
                         .ConfigureAwait(false);
                 }
@@ -165,25 +159,20 @@ namespace RabbitLink.Connection
                     throw;
                 }
             }
-        }
-
-        public Task InvokeActionAsync(Action<IModel> action)
-        {
-            return InvokeActionAsync(action, CancellationToken.None);
-        }
+        }        
 
         #endregion
 
         #region State management
 
-        private void Open()
+        private async Task OpenAsync()
         {
             if (!Connection.IsConnected || IsOpen || _disposedCancellation.IsCancellationRequested)
                 return;
 
             _logger.Info("Opening");
 
-            Cleanup();
+            await AsyncHelper.AsyncAwaitable(Cleanup);
 
             // Last chance to cancel
             if (!Connection.IsConnected || _disposedCancellation.IsCancellationRequested)
@@ -193,7 +182,9 @@ namespace RabbitLink.Connection
             {
                 _logger.Debug("Creating model");
 
-                _model = Connection.CreateModel();
+                _model = await Connection.CreateModelAsync(_disposedCancellation)
+                    .ConfigureAwait(false);
+
                 _model.ModelShutdown += ModelOnModelShutdown;
                 _model.CallbackException += ModelOnCallbackException;
                 _model.FlowControl += ModelOnFlowControl;
@@ -211,7 +202,7 @@ namespace RabbitLink.Connection
                 return;
             }
 
-            Ready?.Invoke(this, EventArgs.Empty);
+            await AsyncHelper.AsyncAwaitable(() => Ready?.Invoke(this, EventArgs.Empty));
 
             _logger.Info($"Opened(channelNumber: {_model.ChannelNumber})");
         }
@@ -234,7 +225,8 @@ namespace RabbitLink.Connection
                             .ConfigureAwait(false);
                     }
 
-                    Open();
+                    await OpenAsync()
+                        .ConfigureAwait(false);
                 }, _disposedCancellation);
             }
             catch
@@ -264,49 +256,71 @@ namespace RabbitLink.Connection
 
         private void ModelOnBasicReturn(object sender, BasicReturnEventArgs e)
         {
-            _logger.Debug(
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Debug(
                 $"Return, code: {e.ReplyCode}, message: {e.ReplyText},  message id:{e.BasicProperties.MessageId}");
-            Return?.Invoke(this, e);
+                Return?.Invoke(this, e);
+            }), CancellationToken.None);            
         }
 
         private void ModelOnBasicRecoverOk(object sender, EventArgs e)
         {
-            _logger.Debug("Recover");
-            Recover?.Invoke(this, e);
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Debug("Recover");
+                Recover?.Invoke(this, e);
+            }), CancellationToken.None);
+            
         }
 
         private void ModelOnBasicNacks(object sender, BasicNackEventArgs e)
         {
-            _logger.Debug($"Nack, tag: {e.DeliveryTag}, multiple: {e.Multiple}");
-            Nack?.Invoke(this, e);
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Debug($"Nack, tag: {e.DeliveryTag}, multiple: {e.Multiple}");
+                Nack?.Invoke(this, e);
+            }), CancellationToken.None);
         }
 
         private void ModelOnBasicAcks(object sender, BasicAckEventArgs e)
         {
-            _logger.Debug($"Ack, tag: {e.DeliveryTag}, multiple: {e.Multiple}");
-            Ack?.Invoke(this, e);
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Debug($"Ack, tag: {e.DeliveryTag}, multiple: {e.Multiple}");
+                Ack?.Invoke(this, e);
+            }), CancellationToken.None);
         }
 
         private void ModelOnFlowControl(object sender, FlowControlEventArgs e)
         {
-            _logger.Debug($"Flow control: {e.Active}");
-            FlowControl?.Invoke(this, e);
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Debug($"Flow control: {e.Active}");
+                FlowControl?.Invoke(this, e);
+            }), CancellationToken.None);
         }
 
         private void ModelOnCallbackException(object sender, CallbackExceptionEventArgs e)
         {
-            _logger.Error($"Callback exception: {e.Exception}");
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Error($"Callback exception: {e.Exception}");
+            }), CancellationToken.None);
         }
 
         private void ModelOnModelShutdown(object sender, ShutdownEventArgs e)
         {
-            _logger.Info($"Shutdown, Initiator: {e.Initiator}, Code: {e.ReplyCode}, Message: {e.ReplyText}");
+            _eventLoop.ScheduleAsync(() => AsyncHelper.RunAsync(() =>
+            {
+                _logger.Info($"Shutdown, Initiator: {e.Initiator}, Code: {e.ReplyCode}, Message: {e.ReplyText}");
 
-            if (e.Initiator == ShutdownInitiator.Application) return;
+                if (e.Initiator == ShutdownInitiator.Application) return;
 
-            Shutdown?.Invoke(this, e);
+                Shutdown?.Invoke(this, e);
 
-            ScheduleReopen(true);
+                ScheduleReopen(true);
+            }), CancellationToken.None);
         }
 
         #endregion

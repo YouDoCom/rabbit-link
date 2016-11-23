@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using RabbitLink.Configuration;
 using RabbitLink.Exceptions;
+using RabbitLink.Helpers;
 using RabbitLink.Internals;
 using RabbitLink.Logging;
 using RabbitMQ.Client;
@@ -30,25 +31,19 @@ namespace RabbitLink.Connection
             if (_logger == null)
                 throw new ArgumentException("Cannot create logger", nameof(configuration.LoggerFactory));
 
-            ConnectionString = _configuration.ConnectionString;
-
-            _connectionFactory = new ConnectionFactory
-            {
-                Uri = ConnectionString,
-                TopologyRecoveryEnabled = false,
-                AutomaticRecoveryEnabled = false,
-                RequestedConnectionTimeout = (int) _configuration.ConnectionTimeout.TotalMilliseconds
-            };
-
-            UserId = _connectionFactory.UserName;
+            _connectionFactory = new LinkConnectionFactory(
+                _configuration.ConnectionString,
+                _configuration.LoggerFactory,
+                _configuration.ConnectionTimeout
+                );
 
             _disposedCancellationSource = new CancellationTokenSource();
             _disposedCancellation = _disposedCancellationSource.Token;
 
-            _logger.Debug("Created");
+            _logger.Debug($"Created(ConnectionFactoryId: {_connectionFactory.Id})");
             if (_configuration.AutoStart)
             {
-                Initialize();
+                InitializeAsync();
             }
         }
 
@@ -61,21 +56,22 @@ namespace RabbitLink.Connection
             if (_disposedCancellation.IsCancellationRequested)
                 return;
 
-            lock (_sync)
+            lock (_disposedCancellationSource)
             {
                 if (_disposedCancellation.IsCancellationRequested)
                     return;
 
-                _logger.Debug("Disposing");
-
                 _disposedCancellationSource.Cancel();
                 _disposedCancellationSource.Dispose();
-                _eventLoop.Dispose();
-                Cleanup();
-
-                _logger.Debug("Disposed");
-                _logger.Dispose();
             }
+
+            _logger.Debug("Disposing");
+            _eventLoop.Dispose();
+
+            Cleanup();
+
+            _logger.Debug("Disposed");
+            _logger.Dispose();
 
             Disposed?.Invoke(this, EventArgs.Empty);
         }
@@ -84,16 +80,13 @@ namespace RabbitLink.Connection
 
         #region Fields
 
-        private readonly object _sync = new object();
-        private readonly object _connectionSync = new object();
-        private readonly EventLoop _eventLoop = new EventLoop();
+        private readonly EventLoop _eventLoop = new EventLoop(EventLoop.DisposingStrategy.Wait);
         private readonly CancellationTokenSource _disposedCancellationSource;
         private readonly CancellationToken _disposedCancellation;
-        private readonly ConnectionFactory _connectionFactory;
+        private readonly LinkConnectionFactory _connectionFactory;
         private readonly LinkConfiguration _configuration;
 
         private readonly ILinkLogger _logger;
-
         private IConnection _connection;
 
         #endregion
@@ -116,57 +109,59 @@ namespace RabbitLink.Connection
 
         public bool Initialized { get; private set; }
 
-        public string ConnectionString { get; }
-        public string UserId { get; }
+        public string ConnectionString => _connectionFactory.Url;
+        public string UserId => _connectionFactory.UserName;
 
         #endregion
 
         #region Connection management
 
-        private void Connect()
+        private async Task ConnectAsync()
         {
             // if already connected or cancelled
             if (IsConnected || _disposedCancellation.IsCancellationRequested)
                 return;
 
-            lock (_connectionSync)
+
+            // Second check
+            if (IsConnected || _disposedCancellation.IsCancellationRequested)
+                return;
+
+            _logger.Info("Connecting");
+
+            // Cleaning old connection
+            await AsyncHelper.AsyncAwaitable(Cleanup);
+
+            // Last chance to cancel
+            if (_disposedCancellation.IsCancellationRequested)
+                return;
+
+            try
             {
-                // Second check
-                if (IsConnected || _disposedCancellation.IsCancellationRequested)
-                    return;
+                _logger.Debug("Opening");
 
-                _logger.Info("Connecting");
+                _connection = await _connectionFactory.GetConnectionAsync(_disposedCancellation)
+                    .ConfigureAwait(false);
 
-                // Cleaning old connection
-                Cleanup();
+                _connection.ConnectionShutdown += ConnectionOnConnectionShutdown;
+                _connection.CallbackException += ConnectionOnCallbackException;
+                _connection.ConnectionBlocked += ConnectionOnConnectionBlocked;
+                _connection.ConnectionUnblocked += ConnectionOnConnectionUnblocked;
 
-                // Last chance to cancel
-                if (_disposedCancellation.IsCancellationRequested)
-                    return;
-
-                try
-                {
-                    _logger.Debug("Opening");
-
-                    _connection = _connectionFactory.CreateConnection();
-                    _connection.ConnectionShutdown += ConnectionOnConnectionShutdown;
-                    _connection.CallbackException += ConnectionOnCallbackException;
-                    _connection.ConnectionBlocked += ConnectionOnConnectionBlocked;
-                    _connection.ConnectionUnblocked += ConnectionOnConnectionUnblocked;
-                                        
-                    _logger.Debug("Sucessfully opened");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error($"Cannot connect: {ex.Message}");
-                    ScheduleReconnect(true);
-                    return;
-                }
-
-                Connected?.Invoke(this, EventArgs.Empty);
-
-                _logger.Info($"Connected (Host: {_connection.Endpoint.HostName}, Port: {_connection.Endpoint.Port}, LocalPort: {_connection.LocalPort})");
+                _logger.Debug("Sucessfully opened");
             }
+            catch (Exception ex)
+            {
+                _logger.Error($"Cannot connect: {ex.Message}");
+                ScheduleReconnect(true);
+                return;
+            }
+
+
+            await AsyncHelper.AsyncAwaitable(() => Connected?.Invoke(this, EventArgs.Empty));
+
+            _logger.Info(
+                $"Connected (Host: {_connection.Endpoint.HostName}, Port: {_connection.Endpoint.Port}, LocalPort: {_connection.LocalPort})");
         }
 
         private void ScheduleReconnect(bool wait)
@@ -185,7 +180,8 @@ namespace RabbitLink.Connection
                             .ConfigureAwait(false);
                     }
 
-                    Connect();
+                    await ConnectAsync()
+                        .ConfigureAwait(false);
                 }, _disposedCancellation);
             }
             catch
@@ -209,7 +205,7 @@ namespace RabbitLink.Connection
             }
         }
 
-        private void OnDisconnected(ShutdownEventArgs e)
+        private Task OnDisconnectedAsync(ShutdownEventArgs e)
         {
             _logger.Debug("Invoking Disconnected event");
 
@@ -232,39 +228,44 @@ namespace RabbitLink.Connection
             }
 
             var eventArgs = new LinkDisconnectedEventArgs(initiator, e.ReplyCode, e.ReplyText);
-            Disconnected?.Invoke(this, eventArgs);
 
-            _logger.Debug("Disconnected event sucessfully invoked");
+            return AsyncHelper.RunAsync(() =>
+            {
+                Disconnected?.Invoke(this, eventArgs);
+                _logger.Debug("Disconnected event sucessfully invoked");
+            });
         }
 
         #endregion
 
         #region Public methods
 
-        public void Initialize()
+        public Task InitializeAsync()
         {
             if (_disposedCancellation.IsCancellationRequested)
                 throw new ObjectDisposedException(GetType().Name);
 
             if (Initialized)
-                return;
+                return Task.CompletedTask;
 
-            lock (_sync)
-            {
-                if (_disposedCancellation.IsCancellationRequested)
-                    throw new ObjectDisposedException(GetType().Name);
-
-                if (Initialized) return;
-
-                _logger.Debug("Initializing");
-                Initialized = true;
-
-                ScheduleReconnect(false);
-                _logger.Debug("Initialized");
-            }
+            return _eventLoop.ScheduleAsync(DoInit, _disposedCancellation);
         }
 
-        public IModel CreateModel()
+        private Task DoInit()
+        {
+            if (Initialized)
+                return Task.CompletedTask;
+
+            _logger.Debug("Initializing");
+            Initialized = true;
+
+            ScheduleReconnect(false);
+            _logger.Debug("Initialized");
+
+            return Task.CompletedTask;
+        }
+
+        public Task<IModel> CreateModelAsync(CancellationToken cancellation)
         {
             if (_disposedCancellation.IsCancellationRequested)
                 throw new ObjectDisposedException(GetType().Name);
@@ -272,16 +273,15 @@ namespace RabbitLink.Connection
             if (!IsConnected)
                 throw new LinkNotConnectedException();
 
-            lock (_connectionSync)
-            {
-                if (_disposedCancellation.IsCancellationRequested)
-                    throw new ObjectDisposedException(GetType().Name);
+            return _eventLoop.ScheduleAsync(GetModel, cancellation);
+        }
 
-                if (!IsConnected)
-                    throw new LinkNotConnectedException();
+        private Task<IModel> GetModel()
+        {
+            if (!IsConnected)
+                throw new LinkNotConnectedException();
 
-                return _connection.CreateModel();
-            }
+            return AsyncHelper.RunAsync(_connection.CreateModel);
         }
 
         #endregion
@@ -290,28 +290,46 @@ namespace RabbitLink.Connection
 
         private void ConnectionOnConnectionUnblocked(object sender, EventArgs e)
         {
-            _logger.Debug("Unblocked");
+            _eventLoop.ScheduleAsync(() =>
+            {
+                _logger.Debug("Unblocked");
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
         }
 
         private void ConnectionOnConnectionBlocked(object sender, ConnectionBlockedEventArgs e)
         {
-            _logger.Debug($"Blocked, reason: {e.Reason}");
+            _eventLoop.ScheduleAsync(() =>
+            {
+                _logger.Debug($"Blocked, reason: {e.Reason}");
+                return Task.CompletedTask;
+            }, CancellationToken.None);
         }
 
         private void ConnectionOnCallbackException(object sender, CallbackExceptionEventArgs e)
         {
-            _logger.Error($"Callback exception: {e.Exception}");
+            _eventLoop.ScheduleAsync(() =>
+            {
+                _logger.Error($"Callback exception: {e.Exception}");
+                return Task.CompletedTask;
+            }, CancellationToken.None);
         }
 
         private void ConnectionOnConnectionShutdown(object sender, ShutdownEventArgs e)
         {
-            _logger.Info($"Diconnected, Initiator: {e.Initiator}, Code: {e.ReplyCode}, Message: {e.ReplyText}");
-            OnDisconnected(e);
+            _eventLoop.ScheduleAsync(async () =>
+            {
+                _logger.Info($"Diconnected, Initiator: {e.Initiator}, Code: {e.ReplyCode}, Message: {e.ReplyText}");
+                await OnDisconnectedAsync(e)
+                    .ConfigureAwait(false);
 
-            // if initialized by application, exit
-            if (e.Initiator == ShutdownInitiator.Application) return;
-
-            ScheduleReconnect(true);
+                // if initialized by application, exit
+                if (e.Initiator != ShutdownInitiator.Application)
+                {
+                    ScheduleReconnect(true);
+                }
+            }, CancellationToken.None);
         }
 
         #endregion

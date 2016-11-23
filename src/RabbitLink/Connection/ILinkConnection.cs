@@ -1,6 +1,8 @@
 ﻿#region Usings
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using RabbitMQ.Client;
 
 #endregion
@@ -17,7 +19,7 @@ namespace RabbitLink.Connection
         event EventHandler Disposed;
         event EventHandler Connected;
         event EventHandler<LinkDisconnectedEventArgs> Disconnected;
-        void Initialize();
-        IModel CreateModel();
+        Task InitializeAsync();
+        Task<IModel> CreateModelAsync(CancellationToken cancellation);
     }
 }

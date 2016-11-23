@@ -11,9 +11,9 @@ namespace Playground
     {
         private static void Main(string[] args)
         {
-            //LinkPlayground.Run();
+            LinkPlayground.Run();
 
-            Run();
+            //Run();
 
             Console.WriteLine();
             Console.WriteLine("All done");

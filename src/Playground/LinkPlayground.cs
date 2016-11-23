@@ -48,7 +48,7 @@ namespace Playground
             using (var consumer = link.CreateConsumer(
                 async cfg =>
                 {
-                    var exchange = await cfg.ExchangeDeclarePassive("link.consume");
+                    var exchange = await cfg.ExchangeDeclarePassive("link.consume");                        
                     var queue = await cfg.QueueDeclare("link.consume");
 
                     await cfg.Bind(queue, exchange);
@@ -108,7 +108,7 @@ namespace Playground
         private static void TestPublish(Link link)
         {
             ColorConsole.WriteLine("Starting...");
-            link.Initialize();
+            link.InitializeAsync();
 
             using (
                 var producer =
@@ -146,7 +146,7 @@ namespace Playground
             link.CreatePersistentTopologyConfigurator(PersConfigure, configurationError: PersOnException);
 
             ColorConsole.WriteLine("Starting...");
-            link.Initialize();
+            link.InitializeAsync();
 
             ColorConsole.WriteLine("Configuring topology");
             try

@@ -38,7 +38,7 @@ namespace RabbitLink
         /// <summary>
         ///     Is Link connected
         /// </summary>
-        public bool IsConnected => !_disposed && _connection.IsConnected;                              
+        public bool IsConnected => _connection.IsConnected;
 
         #endregion
 
@@ -46,9 +46,24 @@ namespace RabbitLink
 
         public void Dispose()
         {
+            Dispose(true);
+        }
+
+        private void Dispose(bool disposing)
+        {
             if (_disposed) return;
             _connection.Dispose();
             _disposed = true;
+
+            if (!disposing)
+            {
+                GC.SuppressFinalize(this);
+            }
+        }
+
+        ~Link()
+        {
+            Dispose(false);
         }
 
         #endregion
@@ -58,9 +73,9 @@ namespace RabbitLink
             return new LinkChannel(_configuration, _connection);
         }
 
-        public void Initialize()
+        public Task InitializeAsync()
         {
-            _connection.Initialize();
+            return _connection.InitializeAsync();
         }
 
         #region Producer
@@ -76,7 +91,7 @@ namespace RabbitLink
 
             if (configurationError == null)
             {
-                configurationError = ex => Task.FromResult((object) null);
+                configurationError = ex => Task.FromResult((object)null);
             }
 
             var configBuilder = new LinkProducerConfigurationBuilder(_configuration);
@@ -129,7 +144,7 @@ namespace RabbitLink
 
             if (configurationError == null)
             {
-                configurationError = ex => Task.FromResult((object) null);
+                configurationError = ex => Task.FromResult((object)null);
             }
 
             var configBuilder = new LinkConsumerConfigurationBuilder(_configuration);
@@ -137,7 +152,7 @@ namespace RabbitLink
 
             return new LinkConsumer(configBuilder.Configuration, _configuration, CreateChannel(),
                 topologyConfiguration, configurationError);
-        }      
+        }
 
         #endregion
 
