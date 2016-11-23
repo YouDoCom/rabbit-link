@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using RabbitLink.Configuration;
 using RabbitLink.Connection;
+using RabbitLink.Helpers;
 using RabbitLink.Internals;
 using RabbitLink.Logging;
 
@@ -46,16 +47,42 @@ namespace RabbitLink.Topology.Internal
 
             _logger.Debug($"Created(channelId: {Channel.Id}, once: {once})");
 
-#pragma warning disable 4014
             ScheduleConfiguration(false);
-#pragma warning restore 4014           
         }
 
         #endregion
 
         #region Events
 
-        public event EventHandler Disposed;
+        private event EventHandler DisposedPriv;
+        public event EventHandler Disposed
+        {
+            add
+            {
+                if (value == null)
+                    return;
+
+                if (_disposedCancellation.IsCancellationRequested)
+                {
+                    value(this, EventArgs.Empty);
+                    return;
+                }
+
+                lock (_disposedCancellationSource)
+                {
+
+                    if (_disposedCancellation.IsCancellationRequested)
+                    {
+                        value(this, EventArgs.Empty);
+                        return;
+                    }
+
+                    DisposedPriv += value;
+                }
+            }
+
+            remove { DisposedPriv -= value; }
+        }
 
         #endregion
 
@@ -77,6 +104,14 @@ namespace RabbitLink.Topology.Internal
             {
                 _eventLoop.ScheduleAsync(async () =>
                 {
+                    if (!Channel.IsOpen || _disposedCancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    if (_isOnce && Configured)
+                        return;
+
                     if (delay)
                     {
                         _logger.Info($"Retrying in {_configuration.TopologyRecoveryInterval.TotalSeconds:0.###}s");
@@ -85,12 +120,8 @@ namespace RabbitLink.Topology.Internal
                             .ConfigureAwait(false);
                     }
 
-                    await Task.Run(async () =>
-                    {
-                        await ConfigureAsync()                                                
-                            .ConfigureAwait(false);
-                    }, _disposedCancellation)
-                        .ConfigureAwait(false);
+                    await ConfigureAsync()
+                           .ConfigureAwait(false);
                 }, _disposedCancellation)
                     .ConfigureAwait(false);
             }
@@ -106,22 +137,36 @@ namespace RabbitLink.Topology.Internal
 
         public void Dispose()
         {
+            Dispose(false);
+        }
+
+        private void Dispose(bool onChannelDisposed)
+        {
             if (_disposedCancellationSource.IsCancellationRequested) return;
 
+            lock (_disposedCancellationSource)
+            {
+                if (_disposedCancellationSource.IsCancellationRequested) return;
+
+                _disposedCancellationSource.Cancel();
+                _disposedCancellationSource.Dispose();
+            }
+
             _logger.Debug("Disposing");
-            _disposedCancellationSource.Cancel();
-            _disposedCancellationSource.Dispose();
             _eventLoop.Dispose();
 
             Channel.Ready -= ChannelOnReady;
             Channel.Disposed -= ChannelOnDisposed;
 
-            Channel.Dispose();
+            if (!onChannelDisposed)
+            {
+                Channel.Dispose();
+            }
 
             _logger.Debug("Disposed");
             _logger.Dispose();
 
-            Disposed?.Invoke(this, EventArgs.Empty);
+            DisposedPriv?.Invoke(this, EventArgs.Empty);
         }
 
         #endregion
@@ -147,11 +192,6 @@ namespace RabbitLink.Topology.Internal
             }
             catch (ObjectDisposedException)
             {
-                _logger.Warning("Channel disposed, disposing");
-#pragma warning disable 4014
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() => Dispose());
-#pragma warning restore 4014
                 return;
             }
             catch (Exception ex)
@@ -167,9 +207,7 @@ namespace RabbitLink.Topology.Internal
                     _logger.Error("Error in error handler: {0}", handlerException);
                 }
 
-#pragma warning disable 4014
                 ScheduleConfiguration(true);
-#pragma warning restore 4014
                 return;
             }
 
@@ -191,8 +229,7 @@ namespace RabbitLink.Topology.Internal
             {
                 _logger.Info("Once topology configured, disposing");
 #pragma warning disable 4014
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() => Dispose());
+                AsyncHelper.RunAsync(Dispose);
 #pragma warning restore 4014
             }
         }
@@ -203,7 +240,7 @@ namespace RabbitLink.Topology.Internal
 
         private readonly CancellationTokenSource _disposedCancellationSource;
         private readonly CancellationToken _disposedCancellation;
-        private readonly EventLoop _eventLoop = new EventLoop();
+        private readonly EventLoop _eventLoop = new EventLoop(EventLoop.DisposingStrategy.Wait);
         private readonly ILinkTopologyHandler _handler;
         private readonly bool _isOnce;
         private readonly ILinkLogger _logger;
@@ -223,21 +260,13 @@ namespace RabbitLink.Topology.Internal
 
         private void ChannelOnReady(object sender, EventArgs eventArgs)
         {
-            if (!_disposedCancellation.IsCancellationRequested)
-            {
-                if (_isOnce && Configured)
-                    return;
-
-#pragma warning disable 4014
-                ScheduleConfiguration(false);
-#pragma warning restore 4014
-            }
+            ScheduleConfiguration(false);
         }
 
         private void ChannelOnDisposed(object sender, EventArgs eventArgs)
         {
             _logger.Debug("Channel disposed, disposing...");
-            Dispose();
+            Dispose(true);
         }
 
         #endregion

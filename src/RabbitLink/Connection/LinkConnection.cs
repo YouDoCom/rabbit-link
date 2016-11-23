@@ -73,7 +73,7 @@ namespace RabbitLink.Connection
             _logger.Debug("Disposed");
             _logger.Dispose();
 
-            Disposed?.Invoke(this, EventArgs.Empty);
+            DisposedPriv?.Invoke(this, EventArgs.Empty);
         }
 
         #endregion
@@ -93,7 +93,37 @@ namespace RabbitLink.Connection
 
         #region Events        
 
-        public event EventHandler Disposed;
+        private event EventHandler DisposedPriv;
+        public event EventHandler Disposed
+        {
+            add
+            {
+                if (value == null)
+                    return;
+
+                if (_disposedCancellation.IsCancellationRequested)
+                {
+                    value(this, EventArgs.Empty);
+                    return;
+                }
+
+                lock (_disposedCancellationSource)
+                {
+
+                    if (_disposedCancellation.IsCancellationRequested)
+                    {
+                        value(this, EventArgs.Empty);
+                        return;
+                    }
+
+                    DisposedPriv += value;
+                }
+            }
+
+            remove { DisposedPriv -= value; }
+        }
+
+
         public event EventHandler Connected;
         public event EventHandler<LinkDisconnectedEventArgs> Disconnected;
 
@@ -173,6 +203,9 @@ namespace RabbitLink.Connection
             {
                 _eventLoop.ScheduleAsync(async () =>
                 {
+                    if (IsConnected || _disposedCancellation.IsCancellationRequested)
+                        return;
+
                     if (wait)
                     {
                         _logger.Info($"Reconnecting in {_configuration.ConnectionRecoveryInterval.TotalSeconds:0.###}s");

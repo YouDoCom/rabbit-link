@@ -43,7 +43,7 @@ namespace RabbitLink.Connection
             _logger.Debug("Disposed");
             _logger.Dispose();
 
-            Disposed?.Invoke(this, EventArgs.Empty);
+            DisposedPriv?.Invoke(this, EventArgs.Empty);
         }
 
         #endregion
@@ -125,7 +125,36 @@ namespace RabbitLink.Connection
         public event EventHandler<BasicAckEventArgs> Ack;
         public event EventHandler<BasicNackEventArgs> Nack;
         public event EventHandler<BasicReturnEventArgs> Return;
-        public event EventHandler Disposed;
+
+        private event EventHandler DisposedPriv;
+        public event EventHandler Disposed
+        {
+            add
+            {
+                if(value == null)
+                    return;
+
+                if (_disposedCancellation.IsCancellationRequested)
+                {
+                    value(this, EventArgs.Empty);
+                    return;
+                }
+
+                lock (_disposedCancellationSource)
+                {
+
+                    if (_disposedCancellation.IsCancellationRequested)
+                    {
+                        value(this, EventArgs.Empty);
+                        return;
+                    }
+
+                    DisposedPriv += value;
+                }
+            }
+
+            remove { DisposedPriv -= value; }
+        }
 
         #endregion
 
@@ -218,6 +247,11 @@ namespace RabbitLink.Connection
             {
                 _eventLoop.ScheduleAsync(async () =>
                 {
+                    if (!Connection.IsConnected || _disposedCancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     if (delay)
                     {
                         _logger.Info($"Reopening in {_configuration.ChannelRecoveryInterval.TotalSeconds:0.###}s");
